@@ -11,7 +11,8 @@ const API_TYPES = ["metadata", "registry"]
 const API_IPFS = "https://nftstorage.link"
 const API_CLOUDFLARE = "https://api.cloudflare.com/client/v4"
 const API_IMAGEDELIVERY = "https://imagedelivery.net"
-const API_KOIOS = (network: string) => `https://binding-fake-url/output/${network}/koios/api/v1`
+const API_OUTPUT = "https://output-load-balancer.xray-network.workers.dev/output"
+const API_KOIOS = (network: string) => `${API_OUTPUT}/${network}/koios/api/v1` // https://koios.rest can be used also
 const ALLOWED_METHODS = ["GET", "POST", "OPTIONS", "HEAD"]
 const ALLOWED_NETWORKS = ["mainnet", "preprod", "preview"]
 const IMG_METADATA_SIZES = ["32", "64", "128", "256", "512", "1024", "2048"]
@@ -45,25 +46,22 @@ export default {
 				if (!IMG_METADATA_SIZES.includes(size)) return throw404WrongSize()
 				try {
 					// Check if image exist in CF Images and serve image
-					await checkImageExistInCFByAPI(type, fingerprint, env)
-					// await checkImageExistInCFByHTTP(type, fingerprint, size, env)
-					return await serveImageFromCF(type, fingerprint, size, request, env)
+					await checkImageExist(type, fingerprint, env)
+					return await serveImage(type, fingerprint, size, request, env, "checking")
 				} catch {
 					// If not found, get image by CIP25 metadata, upload to CF and serve image
 					const imageProvider = await getImageDataProvider(fingerprint, network, env)
 
 					if (imageProvider.metadataProvider.type === "base64") {
 						const imageBlob = blobFromBase64(imageProvider.metadataProvider.data)
-						await uploadImageToCF(imageBlob, type, fingerprint, env)
-						return await serveImageFromCF(type, fingerprint, size, request, env)
+						await uploadImage(imageBlob, type, fingerprint, env)
+						return await serveImage(type, fingerprint, size, request, env)
 					}
 
 					if (imageProvider.metadataProvider.type === "http" || imageProvider.metadataProvider.type === "ipfs") {
 						const imageRemoteURL = imageProvider.metadataProvider.data
 						const imageResponse = await fetch(imageRemoteURL)
-						if (!imageResponse.ok) throw new Error("Error getting image from IPFS")
-						console.log(Number(imageResponse.headers.get("content-length")))
-						console.log(imageResponse.headers)
+						if (!imageResponse.ok) throw new Error("Error getting image from HTTP/IPFS")
 						if (Number(imageResponse.headers.get("content-length") || 0) > IMG_SIZE_LIMIT) {
 							const imageResponseHeaders = new Headers(imageResponse.headers)
 							imageResponseHeaders.set("Cache-Control", "public, max-age=864000000")
@@ -71,8 +69,8 @@ export default {
 							return new Response(imageResponse.body, { headers: imageResponseHeaders }) // serve original file
 						}
 						const imageBlob = await imageResponse.blob()
-						await uploadImageToCF(imageBlob, type, fingerprint, env)
-						return await serveImageFromCF(type, fingerprint, size, request, env)
+						await uploadImage(imageBlob, type, fingerprint, env)
+						return await serveImage(type, fingerprint, size, request, env)
 					}
 				}
 			}
@@ -81,15 +79,14 @@ export default {
 				if (!IMG_REGISTRY_SIZES.includes(size)) return throw404WrongSize()
 				try {
 					// Check if image exist in CF Images and serve image
-					await checkImageExistInCFByAPI(type, fingerprint, env)
-					// await checkImageExistInCFByHTTP(type, fingerprint, size, env)
-					return await serveImageFromCF(type, fingerprint, size, request, env)
+					await checkImageExist(type, fingerprint, env)
+					return await serveImage(type, fingerprint, size, request, env)
 				} catch {
 					const { registryBase64Image } = await getImageDataProvider(fingerprint, network, env)
 					if (registryBase64Image) {
 						const imageBlob = blobFromBase64(registryBase64Image)
-						await uploadImageToCF(imageBlob, type, fingerprint, env)
-						return await serveImageFromCF(type, fingerprint, size, request, env)
+						await uploadImage(imageBlob, type, fingerprint, env)
+						return await serveImage(type, fingerprint, size, request, env)
 					}
 				}
 			}
@@ -102,10 +99,9 @@ export default {
 	},
 }
 
-/*
- * TODO: Slowing request by ~800ms, has burst limits
- */
-const checkImageExistInCFByAPI = async (type: string, fingerprint: string, env: Env) => {
+// TODO: Checking image by CF API slows down request by ~800ms and has burst limits
+const checkImageExist = async (type: string, fingerprint: string, env: Env) => {
+	console.log("Checking image is exists.........")
 	const result = await fetch(`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1/${type}/${fingerprint}`, {
 		headers: { Authorization: `Bearer ${env.ACCOUNT_KEY}` },
 	})
@@ -113,27 +109,22 @@ const checkImageExistInCFByAPI = async (type: string, fingerprint: string, env: 
 	throw new Error("Image doesn't exist")
 }
 
-/*
- * TODO: Working with bugs (cached as 404)
- * The hidden size is needed to bypass the negative Workers cache. Otherwise some sizes will be unavailable (404)
- * after uploading the image for the 30-60 secs, because the first `fetch` was cached
- */
-const checkImageExistInCFByHTTP = async (type: string, fingerprint: string, size: string, env: Env) => {
-	const result = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${type}/${fingerprint}/${size}?${Date.now()}`, {
-		cf: { cacheTtl: 0, cacheEverything: false },
+const serveImage = async (
+	type: string,
+	fingerprint: string,
+	size: string,
+	request: Request,
+	env: Env,
+	cacheKey?: string
+) => {
+	console.log("Serving image.........")
+	const imageResponse = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${type}/${fingerprint}/${size}`, {
+		headers: {
+			"accept-encoding": request.headers.get("accept-encoding") || "",
+			accept: request.headers.get("accept") || "",
+		},
+		cf: { cacheTtl: 0, ...(cacheKey && { cacheKey }) },
 	})
-	if (result.ok) return
-	throw new Error("Image doesn't exist")
-}
-
-const serveImageFromCF = async (type: string, fingerprint: string, size: string, request: Request, env: Env) => {
-	const imageResponse = await fetch(
-		`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${type}/${fingerprint}/${size}?${Date.now()}`,
-		{
-			headers: request.headers,
-			cf: { cacheTtl: 0, cacheEverything: false },
-		}
-	)
 
 	// Handle not modified status
 	if (imageResponse.status === 304) {
@@ -154,7 +145,8 @@ const serveImageFromCF = async (type: string, fingerprint: string, size: string,
 	throw new Error("Error getting image from CF")
 }
 
-const uploadImageToCF = async (image: Blob, type: string, fingerprint: string, env: Env) => {
+const uploadImage = async (image: Blob, type: string, fingerprint: string, env: Env) => {
+	console.log("Uploading image.........")
 	const imageFormData = new FormData()
 	imageFormData.append("file", image)
 	imageFormData.append("id", `${type}/${fingerprint}`)
@@ -167,7 +159,7 @@ const uploadImageToCF = async (image: Blob, type: string, fingerprint: string, e
 	return await imageUploadResponse.json()
 }
 
-const removeImageFromCF = async (type: string, fingerprint: string, env: Env) => {
+const deleteImage = async (type: string, fingerprint: string, env: Env) => {
 	await fetch(`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1/${type}/${fingerprint}`, {
 		method: "DELETE",
 		headers: { Authorization: `Bearer ${env.ACCOUNT_KEY}` },
@@ -179,13 +171,14 @@ const getImageDataProvider = async (
 	network: string,
 	env: Env
 ): Promise<Types.ImageDataProvider> => {
-	const assetInfoResponse = await env.OUTPUT.fetch(`${API_KOIOS(network)}/asset_list?fingerprint=eq.${fingerprint}`)
+	console.log("Getting image source provider.........")
+	const assetInfoResponse = await fetch(`${API_KOIOS(network)}/asset_list?fingerprint=eq.${fingerprint}`)
 	if (!assetInfoResponse.ok) throw new Error("Error getting asset info")
 	const assetInfoResult: any = await assetInfoResponse.json()
 	const assetPolicyId = assetInfoResult[0]?.policy_id
 	const assetName = assetInfoResult[0]?.asset_name
 
-	const assetDataResponse = await env.OUTPUT.fetch(
+	const assetDataResponse = await fetch(
 		`${API_KOIOS(
 			network
 		)}/asset_info?select=asset_name_ascii,minting_tx_metadata,cip68_metadata,token_registry_metadata`,
@@ -236,7 +229,7 @@ const getImageDataProvider = async (
 				...result,
 				metadataProvider: {
 					type: "ipfs",
-					data: `${API_IPFS}/ipfs/${imageURI.replaceAll("ipfs://", "")}`,
+					data: `${API_IPFS}/ipfs/${imageURI.replaceAll("ipfs://", "").replaceAll("ipfs/", "")}`,
 				},
 			}
 		} else if (imageURI.startsWith("data:image/")) {

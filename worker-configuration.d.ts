@@ -2,7 +2,6 @@ interface Env {
 	ACCOUNT_HASH: string
 	ACCOUNT_ID: string
 	ACCOUNT_KEY: string
-	OUTPUT: Fetcher
 
 	// Example binding to KV. Learn more at https://developers.cloudflare.com/workers/runtime-apis/kv/
 	// MY_KV_NAMESPACE: KVNamespace;
