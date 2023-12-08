@@ -1,1 +1,1 @@
-# metadata-images-to-cf-cdn
+# cloudflare-worker-metadata-to-cf-images-cdn

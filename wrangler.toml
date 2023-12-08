@@ -1,0 +1,8 @@
+name = "metadata-images-to-cf-cdn"
+main = "src/index.ts"
+compatibility_date = "2023-11-24"
+node_compat = true
+
+services = [
+  { binding = "OUTPUT", service = "output-serverless-load-balancer" }
+]
