@@ -17,6 +17,7 @@ const ALLOWED_METHODS = ["GET", "POST", "OPTIONS", "HEAD"]
 const ALLOWED_NETWORKS = ["mainnet", "preprod", "preview"]
 const IMG_METADATA_SIZES = ["32", "64", "128", "256", "512", "1024", "2048"]
 const IMG_REGISTRY_SIZES = ["32", "64", "128", "256", "512"]
+const IMG_CHECKING_SIZE = "16"
 const IMG_SIZE_LIMIT = 20_000_000 // Cloudflare upload limit in bytes, if exceeded serve the original image
 
 export default {
@@ -46,10 +47,11 @@ export default {
 				if (!IMG_METADATA_SIZES.includes(size)) return throw404WrongSize()
 				try {
 					// Check if image exist in CF Images and serve image
-					await checkImageExist(type, fingerprint, env)
-					return await serveImage(type, fingerprint, size, request, env, "checking")
+					await checkImageExistByAPI(type, fingerprint, env) // TODO: see function description
+					// await checkImageExistByHTTP(type, fingerprint, env) // TODO: see function description
+					return await serveImage(type, fingerprint, size, request, env)
 				} catch {
-					// If not found, get image by CIP25 metadata, upload to CF and serve image
+					// If not found, get image from CIP25/CIP68 metadata, upload to CF and serve image
 					const imageProvider = await getImageDataProvider(fingerprint, network, env)
 
 					if (imageProvider.metadataProvider.type === "base64") {
@@ -63,10 +65,10 @@ export default {
 						const imageResponse = await fetch(imageRemoteURL)
 						if (!imageResponse.ok) throw new Error("Error getting image from HTTP/IPFS")
 						if (Number(imageResponse.headers.get("content-length") || 0) > IMG_SIZE_LIMIT) {
-							const imageResponseHeaders = new Headers(imageResponse.headers)
-							imageResponseHeaders.set("Cache-Control", "public, max-age=864000000")
-							imageResponseHeaders.set("Expires", new Date(Date.now() + 864_000_000_000).toUTCString())
-							return new Response(imageResponse.body, { headers: imageResponseHeaders }) // serve original file
+							// serve original file
+							return new Response(imageResponse.body, {
+								headers: addExpirationHeaders(imageResponse.headers, 864_000_000_000),
+							})
 						}
 						const imageBlob = await imageResponse.blob()
 						await uploadImage(imageBlob, type, fingerprint, env)
@@ -79,9 +81,11 @@ export default {
 				if (!IMG_REGISTRY_SIZES.includes(size)) return throw404WrongSize()
 				try {
 					// Check if image exist in CF Images and serve image
-					await checkImageExist(type, fingerprint, env)
+					await checkImageExistByAPI(type, fingerprint, env) // TODO: see function description
+					// await checkImageExistByHTTP(type, fingerprint, env) // TODO: see function description
 					return await serveImage(type, fingerprint, size, request, env)
 				} catch {
+					// If not found, get image from REGISTRY, upload to CF and serve image
 					const { registryBase64Image } = await getImageDataProvider(fingerprint, network, env)
 					if (registryBase64Image) {
 						const imageBlob = blobFromBase64(registryBase64Image)
@@ -100,11 +104,21 @@ export default {
 }
 
 // TODO: Checking image by CF API slows down request by ~800ms and has burst limits
-const checkImageExist = async (type: string, fingerprint: string, env: Env) => {
-	console.log("Checking image is exists.........")
+// There is because the first fetch reponse (404) is cached inside CF Edge, and it doesn't reset for 30-60 seconds even after the image upload,
+// so we have to check if the image is in CF Images via the API, rather than directly accessing https://imagedelivery.net.
+const checkImageExistByAPI = async (type: string, fingerprint: string, env: Env) => {
+	console.log("Checking image is exists (API).........")
 	const result = await fetch(`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1/${type}/${fingerprint}`, {
 		headers: { Authorization: `Bearer ${env.ACCOUNT_KEY}` },
 	})
+	if (result.ok) return
+	throw new Error("Image doesn't exist")
+}
+
+// TODO: Still second fetch is cached even if check a different size (IMG_CHECKING_SIZE)
+const checkImageExistByHTTP = async (type: string, fingerprint: string, env: Env) => {
+	console.log("Checking image is exists (HTTP).........")
+	const result = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${type}/${fingerprint}/${IMG_CHECKING_SIZE}`)
 	if (result.ok) return
 	throw new Error("Image doesn't exist")
 }
@@ -115,31 +129,28 @@ const serveImage = async (
 	size: string,
 	request: Request,
 	env: Env,
-	cacheKey?: string
 ) => {
 	console.log("Serving image.........")
 	const imageResponse = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${type}/${fingerprint}/${size}`, {
-		headers: {
-			"accept-encoding": request.headers.get("accept-encoding") || "",
-			accept: request.headers.get("accept") || "",
-		},
-		cf: { cacheTtl: 0, ...(cacheKey && { cacheKey }) },
+		headers: request.headers,
 	})
+
+	const headersUpdated = new Headers(imageResponse.headers)
+	headersUpdated.delete("Content-Security-Policy")
 
 	// Handle not modified status
 	if (imageResponse.status === 304) {
-		const responseHeaders = new Headers(imageResponse.headers)
-		imageResponse.headers.delete("Content-Security-Policy")
-		return new Response(null, { headers: responseHeaders, status: 304 })
+		return new Response(null, {
+			headers: headersUpdated,
+			status: 304,
+		})
 	}
 
 	// Send response with caching headers
 	if (imageResponse.ok) {
-		const responseHeaders = new Headers(imageResponse.headers)
-		responseHeaders.set("Cache-Control", "public, max-age=864000000")
-		responseHeaders.set("Expires", new Date(Date.now() + 864_000_000_000).toUTCString())
-		responseHeaders.delete("Content-Security-Policy")
-		return new Response(imageResponse.body, { headers: responseHeaders })
+		return new Response(imageResponse.body, {
+			headers: addExpirationHeaders(headersUpdated, 864_000_000_000),
+		})
 	}
 
 	throw new Error("Error getting image from CF")
@@ -179,9 +190,8 @@ const getImageDataProvider = async (
 	const assetName = assetInfoResult[0]?.asset_name
 
 	const assetDataResponse = await fetch(
-		`${API_KOIOS(
-			network
-		)}/asset_info?select=asset_name_ascii,minting_tx_metadata,cip68_metadata,token_registry_metadata`,
+		`${API_KOIOS(network)}` +
+			`/asset_info?select=asset_name_ascii,minting_tx_metadata,cip68_metadata,token_registry_metadata`,
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -265,6 +275,13 @@ const blobFromBase64 = (base64String: string) => {
 			.map((char) => char.charCodeAt(0))
 	)
 	return new Blob([byteArray])
+}
+
+const addExpirationHeaders = (headers: Headers, time: number) => {
+	const headersSet = new Headers(headers)
+	headersSet.set("Cache-Control", `public, max-age=${time.toString()}`)
+	headersSet.set("Expires", new Date(Date.now() + time).toUTCString())
+	return headersSet
 }
 
 const throw404 = () => {
