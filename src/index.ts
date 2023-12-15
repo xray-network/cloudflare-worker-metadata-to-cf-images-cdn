@@ -4,11 +4,12 @@
  * Learn more at https://developers.cloudflare.com/workers/
  */
 
+import { parseKoiosJsonCip68Metadata } from "./cip68"
 import * as Types from "./types"
 
 const API_GROUP = "cdn"
 const API_TYPES = ["metadata", "registry"]
-const API_IPFS = "https://nftstorage.link"
+const API_IPFS = "https://nftstorage.link" // https://ipfs.io/ipfs
 const API_CLOUDFLARE = "https://api.cloudflare.com/client/v4"
 const API_IMAGEDELIVERY = "https://imagedelivery.net"
 const API_OUTPUT = "https://output-load-balancer.xray-network.workers.dev/output"
@@ -54,14 +55,14 @@ export default {
 					// If not found, get image from CIP25/CIP68 metadata, upload to CF and serve image
 					const imageProvider = await getImageDataProvider(fingerprint, network, env)
 
-					if (imageProvider.metadataProvider.type === "base64") {
-						const imageBlob = blobFromBase64(imageProvider.metadataProvider.data)
+					if (imageProvider.providerType === "base64") {
+						const imageBlob = base64ToBlob(imageProvider.providerImageData)
 						await uploadImage(imageBlob, type, fingerprint, env)
 						return await serveImage(type, fingerprint, size, request, env)
 					}
 
-					if (imageProvider.metadataProvider.type === "http" || imageProvider.metadataProvider.type === "ipfs") {
-						const imageRemoteURL = imageProvider.metadataProvider.data
+					if (imageProvider.providerType === "http" || imageProvider.providerType === "ipfs") {
+						const imageRemoteURL = imageProvider.providerImageData
 						const imageResponse = await fetch(imageRemoteURL)
 						if (!imageResponse.ok) throw new Error("Error getting image from HTTP/IPFS")
 						if (Number(imageResponse.headers.get("content-length") || 0) > IMG_SIZE_LIMIT) {
@@ -86,9 +87,9 @@ export default {
 					return await serveImage(type, fingerprint, size, request, env)
 				} catch {
 					// If not found, get image from REGISTRY, upload to CF and serve image
-					const { registryBase64Image } = await getImageDataProvider(fingerprint, network, env)
-					if (registryBase64Image) {
-						const imageBlob = blobFromBase64(registryBase64Image)
+					const { registryImageBase64 } = await getImageDataProvider(fingerprint, network, env)
+					if (registryImageBase64) {
+						const imageBlob = base64ToBlob(registryImageBase64)
 						await uploadImage(imageBlob, type, fingerprint, env)
 						return await serveImage(type, fingerprint, size, request, env)
 					}
@@ -123,13 +124,7 @@ const checkImageExistByHTTP = async (type: string, fingerprint: string, env: Env
 	throw new Error("Image doesn't exist")
 }
 
-const serveImage = async (
-	type: string,
-	fingerprint: string,
-	size: string,
-	request: Request,
-	env: Env,
-) => {
+const serveImage = async (type: string, fingerprint: string, size: string, request: Request, env: Env) => {
 	console.log("Serving image.........")
 	const imageResponse = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${type}/${fingerprint}/${size}`, {
 		headers: request.headers,
@@ -183,72 +178,69 @@ const getImageDataProvider = async (
 	env: Env
 ): Promise<Types.ImageDataProvider> => {
 	console.log("Getting image source provider.........")
-	const assetInfoResponse = await fetch(`${API_KOIOS(network)}/asset_list?fingerprint=eq.${fingerprint}`)
-	if (!assetInfoResponse.ok) throw new Error("Error getting asset info")
-	const assetInfoResult: any = await assetInfoResponse.json()
+	const assetResponse = await fetch(`${API_KOIOS(network)}/asset_list?fingerprint=eq.${fingerprint}`)
+	if (!assetResponse.ok) throw new Error("Error getting asset info")
+	const assetInfoResult: any = await assetResponse.json()
 	const assetPolicyId = assetInfoResult[0]?.policy_id
 	const assetName = assetInfoResult[0]?.asset_name
 
-	const assetDataResponse = await fetch(
+	const assetInfoResponse = await fetch(
 		`${API_KOIOS(network)}` +
-			`/asset_info?select=asset_name_ascii,minting_tx_metadata,cip68_metadata,token_registry_metadata`,
+			`/asset_info?select=asset_name,asset_name_ascii,minting_tx_metadata,cip68_metadata,token_registry_metadata`,
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ _asset_list: [[assetPolicyId, assetName]] }),
 		}
 	)
-	if (!assetDataResponse.ok) throw new Error("Error getting asset data")
+	if (!assetInfoResponse.ok) throw new Error("Error getting asset data")
 
-	const assetDataResult: any = await assetDataResponse.json()
+	const assetDataResult: any = await assetInfoResponse.json()
 	const assetNameAscii = assetDataResult[0]?.asset_name_ascii
-	const assetTxMetadata = assetDataResult[0]?.minting_tx_metadata
-	const cip68Metadata = assetDataResult[0]?.cip68_metadata
+	const cip68Metadata = parseKoiosJsonCip68Metadata(assetDataResult[0]?.cip68_metadata)
+	const mintingTxMetadata = assetDataResult[0]?.minting_tx_metadata
 	const tokenRegistryMetadata = assetDataResult[0]?.token_registry_metadata
 
-	const result = {
-		metadataProvider: {},
-		registryBase64Image: tokenRegistryMetadata?.logo || "",
+	const provider: Types.ImageDataProvider = {
+		providerType: "",
+		providerImageData: "",
+		registryImageBase64: tokenRegistryMetadata?.logo || "",
 	}
 
-	let imageURI =
-		assetTxMetadata?.["721"]?.[assetPolicyId]?.[assetNameAscii]?.image ||
-		assetTxMetadata?.["721"]?.[assetPolicyId]?.[assetName]?.image
+	provider.providerImageData =
+		cip68Metadata?.["100"]?.[0]?.image ||
+		cip68Metadata?.["444"]?.[0]?.image ||
+		cip68Metadata?.["333"]?.[0]?.image ||
+		cip68Metadata?.["222"]?.[0]?.image ||
+		mintingTxMetadata?.["721"]?.[assetPolicyId]?.[assetNameAscii]?.image ||
+		mintingTxMetadata?.["721"]?.[assetPolicyId]?.[assetName]?.image
 
-	if (cip68Metadata) {
-		// TODO: imageURI from CIP68 metadata
+	if (!provider.providerImageData) throw new Error("Image in 721 metadata not found")
+
+	if (Array.isArray(provider.providerImageData)) {
+		provider.providerImageData = provider.providerImageData.join("")
 	}
 
-	if (!imageURI) throw new Error("Image in 721 metadata not found")
-
-	if (Array.isArray(imageURI)) {
-		imageURI = imageURI.join("")
-	}
-
-	if (typeof imageURI == "string") {
-		if (imageURI.startsWith("https://") || imageURI.startsWith("http://")) {
+	if (typeof provider.providerImageData == "string") {
+		if (provider.providerImageData.startsWith("https://") || provider.providerImageData.startsWith("http://")) {
 			return {
-				...result,
-				metadataProvider: {
-					type: "http",
-					data: imageURI,
-				},
+				...provider,
+				providerType: "http",
+				providerImageData: provider.providerImageData,
 			}
-		} else if (imageURI.startsWith("ipfs://")) {
+		} else if (provider.providerImageData.startsWith("ipfs://")) {
 			return {
-				...result,
-				metadataProvider: {
-					type: "ipfs",
-					data: `${API_IPFS}/ipfs/${imageURI.replaceAll("ipfs://", "").replaceAll("ipfs/", "")}`,
-				},
+				...provider,
+				providerType: "ipfs",
+				providerImageData: `${API_IPFS}/ipfs/${provider.providerImageData
+					.replaceAll("ipfs://", "")
+					.replaceAll("ipfs/", "")}`,
 			}
-		} else if (imageURI.startsWith("data:image/")) {
+		} else if (provider.providerImageData.startsWith("data:image/")) {
 			return {
-				...result,
-				metadataProvider: {
-					type: "base64",
-					data: imageURI,
-				},
+				...provider,
+				providerType: "base64",
+				providerImageData: provider.providerImageData,
 			}
 		}
 	}
@@ -268,7 +260,7 @@ const getUrlSegments = (url: URL) => {
 	}
 }
 
-const blobFromBase64 = (base64String: string) => {
+const base64ToBlob = (base64String: string) => {
 	const byteArray = Uint8Array.from(
 		atob(base64String)
 			.split("")
