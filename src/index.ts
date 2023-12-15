@@ -48,17 +48,17 @@ export default {
 				if (!IMG_METADATA_SIZES.includes(size)) return throw404WrongSize()
 				try {
 					// Check if image exist in CF Images and serve image
-					await checkImageExistByAPI(type, fingerprint, env) // TODO: see function description
-					// await checkImageExistByHTTP(type, fingerprint, env) // TODO: see function description
-					return await serveImage(type, fingerprint, size, request, env)
+					await checkImageExistByAPI(network, type, fingerprint, env) // TODO: see function description
+					// await checkImageExistByHTTP(network, type, fingerprint, env) // TODO: see function description
+					return await serveImage(network, type, fingerprint, size, request, env)
 				} catch {
 					// If not found, get image from CIP25/CIP68 metadata, upload to CF and serve image
 					const imageProvider = await getImageDataProvider(fingerprint, network, env)
 
 					if (imageProvider.providerType === "base64") {
 						const imageBlob = base64ToBlob(imageProvider.providerImageData)
-						await uploadImage(imageBlob, type, fingerprint, env)
-						return await serveImage(type, fingerprint, size, request, env)
+						await uploadImage(imageBlob, network, type, fingerprint, env)
+						return await serveImage(network, type, fingerprint, size, request, env)
 					}
 
 					if (imageProvider.providerType === "http" || imageProvider.providerType === "ipfs") {
@@ -68,12 +68,12 @@ export default {
 						if (Number(imageResponse.headers.get("content-length") || 0) > IMG_SIZE_LIMIT) {
 							// serve original file
 							return new Response(imageResponse.body, {
-								headers: addExpirationHeaders(imageResponse.headers, 864_000_000_000),
+								headers: addExpirationHeaders(imageResponse.headers, 604_800_000), // Permanent cache (1000 weeks)
 							})
 						}
 						const imageBlob = await imageResponse.blob()
-						await uploadImage(imageBlob, type, fingerprint, env)
-						return await serveImage(type, fingerprint, size, request, env)
+						await uploadImage(imageBlob, network, type, fingerprint, env)
+						return await serveImage(network, type, fingerprint, size, request, env)
 					}
 				}
 			}
@@ -82,16 +82,16 @@ export default {
 				if (!IMG_REGISTRY_SIZES.includes(size)) return throw404WrongSize()
 				try {
 					// Check if image exist in CF Images and serve image
-					await checkImageExistByAPI(type, fingerprint, env) // TODO: see function description
+					await checkImageExistByAPI(network, type, fingerprint, env) // TODO: see function description
 					// await checkImageExistByHTTP(type, fingerprint, env) // TODO: see function description
-					return await serveImage(type, fingerprint, size, request, env)
+					return await serveImage(network, type, fingerprint, size, request, env)
 				} catch {
 					// If not found, get image from REGISTRY, upload to CF and serve image
 					const { registryImageBase64 } = await getImageDataProvider(fingerprint, network, env)
 					if (registryImageBase64) {
 						const imageBlob = base64ToBlob(registryImageBase64)
-						await uploadImage(imageBlob, type, fingerprint, env)
-						return await serveImage(type, fingerprint, size, request, env)
+						await uploadImage(imageBlob, network, type, fingerprint, env)
+						return await serveImage(network, type, fingerprint, size, request, env)
 					}
 				}
 			}
@@ -107,9 +107,9 @@ export default {
 // TODO: Checking image by CF API slows down request by ~800ms and has burst limits
 // There is because the first fetch reponse (404) is cached inside CF Edge, and it doesn't reset for 30-60 seconds even after the image upload,
 // so we have to check if the image is in CF Images via the API, rather than directly accessing https://imagedelivery.net.
-const checkImageExistByAPI = async (type: string, fingerprint: string, env: Env) => {
+const checkImageExistByAPI = async (network: string, type: string, fingerprint: string, env: Env) => {
 	console.log("Checking image is exists (API).........")
-	const result = await fetch(`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1/${type}/${fingerprint}`, {
+	const result = await fetch(`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1/${network}/${type}/${fingerprint}`, {
 		headers: { Authorization: `Bearer ${env.ACCOUNT_KEY}` },
 	})
 	if (result.ok) return
@@ -117,16 +117,16 @@ const checkImageExistByAPI = async (type: string, fingerprint: string, env: Env)
 }
 
 // TODO: Still second fetch is cached even if check a different size (IMG_CHECKING_SIZE)
-const checkImageExistByHTTP = async (type: string, fingerprint: string, env: Env) => {
+const checkImageExistByHTTP = async (network: string, type: string, fingerprint: string, env: Env) => {
 	console.log("Checking image is exists (HTTP).........")
-	const result = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${type}/${fingerprint}/${IMG_CHECKING_SIZE}`)
+	const result = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${network}/${type}/${fingerprint}/${IMG_CHECKING_SIZE}`)
 	if (result.ok) return
 	throw new Error("Image doesn't exist")
 }
 
-const serveImage = async (type: string, fingerprint: string, size: string, request: Request, env: Env) => {
+const serveImage = async (network: string, type: string, fingerprint: string, size: string, request: Request, env: Env) => {
 	console.log("Serving image.........")
-	const imageResponse = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${type}/${fingerprint}/${size}`, {
+	const imageResponse = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${network}/${type}/${fingerprint}/${size}`, {
 		headers: request.headers,
 	})
 
@@ -144,18 +144,18 @@ const serveImage = async (type: string, fingerprint: string, size: string, reque
 	// Send response with caching headers
 	if (imageResponse.ok) {
 		return new Response(imageResponse.body, {
-			headers: addExpirationHeaders(headersUpdated, 864_000_000_000),
+			headers: addExpirationHeaders(headersUpdated, 604_800_000), // Permanent cache (1000 weeks)
 		})
 	}
 
 	throw new Error("Error getting image from CF")
 }
 
-const uploadImage = async (image: Blob, type: string, fingerprint: string, env: Env) => {
+const uploadImage = async (image: Blob, network: string, type: string, fingerprint: string, env: Env) => {
 	console.log("Uploading image.........")
 	const imageFormData = new FormData()
 	imageFormData.append("file", image)
-	imageFormData.append("id", `${type}/${fingerprint}`)
+	imageFormData.append("id", `${network}/${type}/${fingerprint}`)
 	const imageUploadResponse = await fetch(`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1`, {
 		method: "POST",
 		headers: { Authorization: `Bearer ${env.ACCOUNT_KEY}` },
@@ -165,8 +165,8 @@ const uploadImage = async (image: Blob, type: string, fingerprint: string, env: 
 	return await imageUploadResponse.json()
 }
 
-const deleteImage = async (type: string, fingerprint: string, env: Env) => {
-	await fetch(`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1/${type}/${fingerprint}`, {
+const deleteImage = async (network: string, type: string, fingerprint: string, env: Env) => {
+	await fetch(`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1/${network}/${type}/${fingerprint}`, {
 		method: "DELETE",
 		headers: { Authorization: `Bearer ${env.ACCOUNT_KEY}` },
 	})
@@ -272,7 +272,7 @@ const base64ToBlob = (base64String: string) => {
 const addExpirationHeaders = (headers: Headers, time: number) => {
 	const headersSet = new Headers(headers)
 	headersSet.set("Cache-Control", `public, max-age=${time.toString()}`)
-	headersSet.set("Expires", new Date(Date.now() + time).toUTCString())
+	headersSet.set("Expires", new Date(Date.now() + time * 1000).toUTCString())
 	return headersSet
 }
 
@@ -281,7 +281,8 @@ const throw404 = () => {
 }
 
 const throw404NoImage = () => {
-	return new Response("404. Image not found! Check if the request is correct", { status: 404 })
+	const headers = addExpirationHeaders(new Headers(), 604_800 * 10) // Set the cache for 10 weeks
+	return new Response("404. Image not found! Check if the request is correct", { status: 404, headers })
 }
 
 const throw413ImageTooLarge = () => {
