@@ -1,7 +1,7 @@
 export const parseKoiosJsonCip68Metadata = (data: any) => {
 	try {
 		return Object.keys(data || {}).reduce((acc: any, key: string) => {
-			acc[key] = parseDbSyncJsonbCip68Metadata(data[key])
+			acc[key] = parseDbSyncJsonCip68Metadata(data[key])
 			return acc
 		}, {} as any)
 	} catch (error) {
@@ -10,30 +10,28 @@ export const parseKoiosJsonCip68Metadata = (data: any) => {
 	}
 }
 
-export const parseDbSyncJsonbCip68Metadata = (data: any): any => {
+export const parseDbSyncJsonCip68Metadata = (data: any): any => {
 	if (data.fields) {
-		return data.fields.map((item: any) => parseDbSyncJsonbCip68Metadata(item))
+		return data.fields.map((item: any) => parseDbSyncJsonCip68Metadata(item))
+	}
+
+	if (data.list) {
+		return data.list.map((item: any) => parseDbSyncJsonCip68Metadata(item))
 	}
 
 	if (data.map) {
 		return data?.map?.reduce((acc: any, item: any) => {
-			acc[hexToString(item.k.bytes)] = parseDbSyncJsonbCip68Metadata(item.v)
+			acc[hexToString(item.k.bytes)] = parseDbSyncJsonCip68Metadata(item.v)
 			return acc
 		}, {} as any)
-	}
-
-	if (data.int) {
-		return Number(data.int)
 	}
 
 	if (data.bytes) {
 		return hexToString(data.bytes)
 	}
 
-	if (data.list) {
-		return data.list.map((item: any) => {
-			return parseDbSyncJsonbCip68Metadata(item)
-		})
+	if (data.int) {
+		return Number(data.int)
 	}
 
 	return undefined

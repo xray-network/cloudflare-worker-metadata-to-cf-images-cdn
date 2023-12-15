@@ -208,12 +208,12 @@ const getImageDataProvider = async (
 	}
 
 	provider.providerImageData =
-		cip68Metadata?.["100"]?.[0]?.image ||
-		cip68Metadata?.["444"]?.[0]?.image ||
-		cip68Metadata?.["333"]?.[0]?.image ||
-		cip68Metadata?.["222"]?.[0]?.image ||
-		mintingTxMetadata?.["721"]?.[assetPolicyId]?.[assetNameAscii]?.image ||
-		mintingTxMetadata?.["721"]?.[assetPolicyId]?.[assetName]?.image
+		cip68Metadata?.["222"]?.[0]?.image || // NFT hold by the user's wallet making use of CIP25 inner structure
+		cip68Metadata?.["444"]?.[0]?.image || // RFT hold by the user's wallet making use of the union of CIP25 inner structure AND the Cardano foundation off-chain registry inner structure
+		cip68Metadata?.["100"]?.[0]?.image || // Reference NFT locked at a script containing the datum
+		cip68Metadata?.["333"]?.[0]?.logo || // FT hold by the user's wallet making use of Cardano foundation off-chain registry inner structure
+		mintingTxMetadata?.["721"]?.[assetPolicyId]?.[assetNameAscii]?.image || // CIP25 NFT format
+		mintingTxMetadata?.["721"]?.[assetPolicyId]?.[assetName]?.image // Fix for bad people who don't follow the CIP25 standard
 
 	if (!provider.providerImageData) throw new Error("Image in 721 metadata not found")
 
