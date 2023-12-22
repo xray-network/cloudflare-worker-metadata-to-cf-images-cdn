@@ -67,9 +67,12 @@ export default {
 						if (!imageResponse.ok) throw new Error("Error getting image from HTTP/IPFS")
 						if (Number(imageResponse.headers.get("content-length") || 0) > IMG_SIZE_LIMIT) {
 							// serve original file
-							return new Response(imageResponse.body, {
-								headers: addExpirationHeaders(imageResponse.headers, 604_800_000), // Permanent cache (1000 weeks)
-							})
+							return addCorsHeaders(
+								addExpirationHeaders(
+									new Response(imageResponse.body),
+									604_800_000, // Permanent cache (1000 weeks)
+								)
+							)
 						}
 						const imageBlob = await imageResponse.blob()
 						await uploadImage(imageBlob, network, type, fingerprint, env)
@@ -109,9 +112,12 @@ export default {
 // so we have to check if the image is in CF Images via the API, rather than directly accessing https://imagedelivery.net.
 const checkImageExistByAPI = async (network: string, type: string, fingerprint: string, env: Env) => {
 	console.log("Checking image is exists (API).........")
-	const result = await fetch(`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1/${network}/${type}/${fingerprint}`, {
-		headers: { Authorization: `Bearer ${env.ACCOUNT_KEY}` },
-	})
+	const result = await fetch(
+		`${API_CLOUDFLARE}/accounts/${env.ACCOUNT_ID}/images/v1/${network}/${type}/${fingerprint}`,
+		{
+			headers: { Authorization: `Bearer ${env.ACCOUNT_KEY}` },
+		}
+	)
 	if (result.ok) return
 	throw new Error("Image doesn't exist")
 }
@@ -119,33 +125,50 @@ const checkImageExistByAPI = async (network: string, type: string, fingerprint: 
 // TODO: Still second fetch is cached even if check a different size (IMG_CHECKING_SIZE)
 const checkImageExistByHTTP = async (network: string, type: string, fingerprint: string, env: Env) => {
 	console.log("Checking image is exists (HTTP).........")
-	const result = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${network}/${type}/${fingerprint}/${IMG_CHECKING_SIZE}`)
+	const result = await fetch(
+		`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${network}/${type}/${fingerprint}/${IMG_CHECKING_SIZE}`
+	)
 	if (result.ok) return
 	throw new Error("Image doesn't exist")
 }
 
-const serveImage = async (network: string, type: string, fingerprint: string, size: string, request: Request, env: Env) => {
+const serveImage = async (
+	network: string,
+	type: string,
+	fingerprint: string,
+	size: string,
+	request: Request,
+	env: Env
+) => {
 	console.log("Serving image.........")
-	const imageResponse = await fetch(`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${network}/${type}/${fingerprint}/${size}`, {
-		headers: request.headers,
-	})
+	const imageResponse = await fetch(
+		`${API_IMAGEDELIVERY}/${env.ACCOUNT_HASH}/${network}/${type}/${fingerprint}/${size}`,
+		{
+			headers: request.headers,
+		}
+	)
 
 	const headersUpdated = new Headers(imageResponse.headers)
 	headersUpdated.delete("Content-Security-Policy")
 
 	// Handle not modified status
 	if (imageResponse.status === 304) {
-		return new Response(null, {
-			headers: headersUpdated,
-			status: 304,
-		})
+		return addCorsHeaders(
+			new Response(null, {
+				headers: headersUpdated,
+				status: 304,
+			})
+		)
 	}
 
 	// Send response with caching headers
 	if (imageResponse.ok) {
-		return new Response(imageResponse.body, {
-			headers: addExpirationHeaders(headersUpdated, 604_800_000), // Permanent cache (1000 weeks)
-		})
+		return addCorsHeaders(
+			addExpirationHeaders(
+				new Response(imageResponse.body, { headers: headersUpdated }),
+				604_800_000, // Permanent cache (1000 weeks)
+			)
+		)
 	}
 
 	throw new Error("Error getting image from CF")
@@ -269,44 +292,56 @@ const base64ToBlob = (base64String: string) => {
 	return new Blob([byteArray])
 }
 
-const addExpirationHeaders = (headers: Headers, time: number) => {
-	const headersSet = new Headers(headers)
-	headersSet.set("Cache-Control", `public, max-age=${time.toString()}`)
-	headersSet.set("Expires", new Date(Date.now() + time * 1000).toUTCString())
-	return headersSet
+const addCorsHeaders = (response: Response) => {
+	const headers = new Headers(response.headers)
+	headers.set("Access-Control-Allow-Origin", "*")
+	return new Response(response.body, { ...response, status: response.status, headers })
+}
+
+const addExpirationHeaders = (response: Response, time: number) => {
+	const headers = new Headers(response.headers)
+	headers.set("Cache-Control", `public, max-age=${time.toString()}`)
+	headers.set("Expires", new Date(Date.now() + time * 1000).toUTCString())
+	return new Response(response.body, { ...response, status: response.status, headers })
 }
 
 const throw404 = () => {
-	return new Response("404. API not found. Check if the request is correct", { status: 404 })
+	return addCorsHeaders(new Response("404. API not found. Check if the request is correct", { status: 404 }))
 }
 
 const throw404NoImage = () => {
-	const headers = addExpirationHeaders(new Headers(), 604_800 * 10) // Set the cache for 10 weeks
-	return new Response("404. Image not found! Check if the request is correct", { status: 404, headers })
+	return addCorsHeaders(
+		addExpirationHeaders(
+			new Response("404. Image not found! Check if the request is correct", { status: 404 }),
+			604_800 * 10, // Set the cache for 10 weeks
+		)
+	)
 }
 
 const throw413ImageTooLarge = () => {
-	return new Response(`413. Image too large! The image exceeded the size limit of ${IMG_SIZE_LIMIT} bytes`, {
-		status: 413,
-	})
+	return addCorsHeaders(
+		new Response(`413. Image too large! The image exceeded the size limit of ${IMG_SIZE_LIMIT} bytes`, {
+			status: 413,
+		})
+	)
 }
 
 const throw404CIPNotSupported = () => {
-	return new Response("404. Current CIP is not yet supported", { status: 404 })
+	return addCorsHeaders(new Response("404. Current CIP is not yet supported", { status: 404 }))
 }
 
 const throw404WrongSize = () => {
-	return new Response("404. Image size not found! Check if the request is correct", { status: 404 })
+	return addCorsHeaders(new Response("404. Image size not found! Check if the request is correct", { status: 404 }))
 }
 
 const throw405 = () => {
-	return new Response("405. Method not allowed. Check if the request is correct", { status: 405 })
+	return addCorsHeaders(new Response("405. Method not allowed. Check if the request is correct", { status: 405 }))
 }
 
 const throw500 = () => {
-	return new Response("500. Server error! Something went wrong", { status: 500 })
+	return addCorsHeaders(new Response("500. Server error! Something went wrong", { status: 500 }))
 }
 
 const throwReject = (response: Response) => {
-	return new Response(response.body, response)
+	return addCorsHeaders(new Response(response.body, response))
 }
