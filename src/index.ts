@@ -12,8 +12,8 @@ const API_TYPES = ["metadata", "registry"]
 const API_IPFS = "https://nftstorage.link" // https://ipfs.io/ipfs
 const API_CLOUDFLARE = "https://api.cloudflare.com/client/v4"
 const API_IMAGEDELIVERY = "https://imagedelivery.net"
-const API_OUTPUT = "https://output-load-balancer.xray-network.workers.dev/output"
-const API_KOIOS = (network: string) => `${API_OUTPUT}/${network}/koios/api/v1` // https://koios.rest can be used also
+const API_OUTPUT = "https://output-load-balancer.xray-network.workers.dev/output" // should to be in a different zone: https://community.cloudflare.com/t/calling-for-worker-from-another-worker/534616/3
+const API_KOIOS = (network: string) => `${API_OUTPUT}/koios/${network}/api/v1` // https://koios.rest can be used also
 const ALLOWED_METHODS = ["GET", "POST", "OPTIONS", "HEAD"]
 const ALLOWED_NETWORKS = ["mainnet", "preprod", "preview"]
 const IMG_METADATA_SIZES = ["32", "64", "128", "256", "512", "1024", "2048"]
@@ -216,6 +216,9 @@ const getImageDataProvider = async (
       body: JSON.stringify({ _asset_list: [[assetPolicyId, assetName]] }),
     }
   )
+
+  console.log(assetInfoResponse)
+
   if (!assetInfoResponse.ok) throw new Error("Error getting asset data")
 
   const assetDataResult: any = await assetInfoResponse.json()
