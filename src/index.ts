@@ -46,6 +46,7 @@ export default {
     try {
       if (type === "metadata") {
         if (!IMG_METADATA_SIZES.includes(size)) return throw404WrongSize()
+        ctx.waitUntil(countIncrement(env))
         try {
           // Check if image exist in CF Images and serve image
           await checkImageExistByAPI(network, type, fingerprint, env) // TODO: see function description
@@ -83,6 +84,7 @@ export default {
 
       if (type === "registry") {
         if (!IMG_REGISTRY_SIZES.includes(size)) return throw404WrongSize()
+        ctx.waitUntil(countIncrement(env))
         try {
           // Check if image exist in CF Images and serve image
           await checkImageExistByAPI(network, type, fingerprint, env) // TODO: see function description
@@ -105,6 +107,11 @@ export default {
       return throw404NoImage()
     }
   },
+}
+
+const countIncrement = async (env: Env) => {
+  const requestsCount = (await env.KV_CDN_COUNTER.get("counter")) || 0
+  await env.KV_CDN_COUNTER.put("counter", (Number(requestsCount) + 1).toString())
 }
 
 // TODO: Checking image by CF API slows down request by ~800ms and has burst limits

@@ -2,6 +2,7 @@ interface Env {
 	ACCOUNT_HASH: string
 	ACCOUNT_ID: string
 	ACCOUNT_KEY: string
+	KV_CDN_COUNTER: KVNamespace
 
 	// Example binding to KV. Learn more at https://developers.cloudflare.com/workers/runtime-apis/kv/
 	// MY_KV_NAMESPACE: KVNamespace;
