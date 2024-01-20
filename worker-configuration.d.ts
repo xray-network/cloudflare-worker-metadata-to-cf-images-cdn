@@ -1,4 +1,6 @@
 interface Env {
+	OUTPUT_LOAD_BALANCER: Fetcher
+
 	ACCOUNT_HASH: string
 	ACCOUNT_ID: string
 	ACCOUNT_KEY: string

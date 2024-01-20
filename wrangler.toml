@@ -2,6 +2,10 @@ name = "metadata-to-cf-images-cdn"
 main = "src/index.ts"
 compatibility_date = "2023-11-24"
 
+services = [
+  { binding = "OUTPUT_LOAD_BALANCER", service = "output-load-balancer" },
+]
+
 kv_namespaces = [
   { binding = "KV_CDN_COUNTER", id = "76edc9c0e130486a807b29c30fe1b0d4" }
 ]
