@@ -35,3 +35,14 @@ yarn start
 ```
 yarn deploy
 ```
+
+## Endpoints
+
+* Fingerprint: Cardano asset fingerprint `asset1...`
+* Metadata Image Size: `["32", "64", "128", "256", "512", "1024", "2048"]`
+* Registry Image Size: `["32", "64", "128", "256", "512"]`
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| GET | /cdn/metadata/:fingerprint/:size | Get image from Metadata and resize to specified size |
+| GET | /cdn/registry/:fingerprint/:size | Get logo from Token Registry and resize to specified size |
