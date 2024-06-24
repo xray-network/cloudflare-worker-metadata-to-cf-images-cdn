@@ -3,7 +3,7 @@
 # XRAY/Graph Images CDN — Cloudflare Worker
 
 > [!WARNING]
-> **DEPRECATED:** The tool has been moved to XRAY | Graph | Output, which is an internal proprietary XRAY project that acts as a load balancer and proxy tool for API access management and documentation in OpenAPI format
+> **DEPRECATED:** The tool has been moved to XRAY/Graph Output, which is an internal proprietary XRAY project that acts as a load balancer and proxy tool for API access management and documentation in OpenAPI format
 
 XRAY/Graph Images CDN — Proxying CIP25, CIP26 (REGISTRY), or CIP68 images from/to Cloudflare Images CDN
 
